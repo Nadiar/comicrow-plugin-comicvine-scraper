@@ -1,0 +1,149 @@
+{
+  "$schema": "https://comicrow.com/schemas/crowplugin-manifest-v1.json",
+  "name": "ComicVine Scraper",
+  "version": "1.2.0",
+  "author": "ComicRow",
+  "description": "Scrape comic metadata from ComicVine. Supports batch processing with smart matching, confidence thresholds, and manual match review.",
+  "language": "dotnet",
+  "entrypoint": "ComicVineScraperPlugin.dll",
+  "sdkVersion": "1.0.0",
+  "hooks": [
+    "OnLoad",
+    "OnUnload"
+  ],
+  "RequiredPermissions": {
+    "FileSystem": ["comic:read"],
+    "Http": ["comicvine.gamespot.com"],
+    "Database": ["comic:metadata"],
+    "Reason": "Reads comic information to search Comic Vine and stores matched metadata"
+  },
+  "OptionalPermissions": {
+    "FileSystem": ["comic:write"],
+    "Reason": "Update comic file embedded metadata (ComicInfo.xml)"
+  },
+  "api": {
+    "enabled": true,
+    "endpoints": [
+      {
+        "route": "search",
+        "method": "POST",
+        "description": "Search ComicVine for comics",
+        "requestBody": {
+          "type": "object",
+          "properties": {
+            "query": { "type": "string", "description": "Search query" },
+            "issueNumber": { "type": "string", "description": "Optional issue number filter" },
+            "maxResults": { "type": "integer", "description": "Maximum results to return" }
+          },
+          "required": ["query"]
+        }
+      },
+      {
+        "route": "scrape",
+        "method": "POST",
+        "description": "Scrape metadata for selected comics",
+        "requestBody": {
+          "type": "object",
+          "properties": {
+            "comicIds": { "type": "array", "items": { "type": "string" }, "description": "Comic IDs to scrape" },
+            "autoApplyThreshold": { "type": "number", "description": "Auto-apply threshold (0-1)" }
+          },
+          "required": ["comicIds"]
+        }
+      },
+      {
+        "route": "issue/{issueId}",
+        "method": "GET",
+        "description": "Get ComicVine issue details by ID",
+        "parameters": [
+          { "name": "issueId", "in": "path", "type": "string", "required": true, "description": "ComicVine issue ID" }
+        ]
+      },
+      {
+        "route": "match/{comicId}",
+        "method": "GET",
+        "description": "Get potential ComicVine matches for a comic",
+        "parameters": [
+          { "name": "comicId", "in": "path", "type": "string", "required": true, "description": "Local comic ID" }
+        ]
+      },
+      {
+        "route": "apply",
+        "method": "POST",
+        "description": "Apply ComicVine match to a comic",
+        "requestBody": {
+          "type": "object",
+          "properties": {
+            "comicId": { "type": "string", "description": "Local comic ID" },
+            "comicVineId": { "type": "string", "description": "ComicVine issue ID to apply" },
+            "mergeMode": { "type": "boolean", "description": "Only fill empty fields" }
+          },
+          "required": ["comicId", "comicVineId"]
+        }
+      }
+    ]
+  },
+  "contextMenu": {
+    "label": "Scrape from Comic Vine",
+    "icon": "search",
+    "targets": ["comic"]
+  },
+  "libraryScan": {
+    "enabled": false,
+    "mode": "comic",
+    "fileTypes": []
+  },
+  "updates": {
+    "repository": "Nadiar/comicrow-plugin-comicvine",
+    "channel": "release",
+    "enabled": true
+  },
+  "settings": {
+    "scan_on_library_import": {
+      "type": "boolean",
+      "default": false,
+      "label": "Auto-scan on Import",
+      "description": "Automatically scrape metadata during library imports. WARNING: Can slow down large imports."
+    },
+    "auto_apply_threshold": {
+      "type": "number",
+      "default": 0.85,
+      "min": 0.0,
+      "max": 1.0,
+      "label": "Auto-apply Threshold",
+      "description": "Minimum confidence score (0-1) for auto-applying metadata."
+    },
+    "merge_mode": {
+      "type": "boolean",
+      "default": true,
+      "label": "Merge Mode",
+      "description": "Only fill empty fields. When false, overwrites all fields."
+    },
+    "skip_existing": {
+      "type": "boolean",
+      "default": false,
+      "label": "Skip Existing",
+      "description": "Skip comics that already have Series and Issue number."
+    },
+    "only_missing_ids": {
+      "type": "boolean",
+      "default": false,
+      "label": "Only Missing IDs",
+      "description": "Only process comics without a Comic Vine ID."
+    },
+    "parse_filename": {
+      "type": "boolean",
+      "default": true,
+      "label": "Parse Filename",
+      "description": "Parse series name and issue number from filename if metadata is empty."
+    },
+    "max_search_results": {
+      "type": "number",
+      "default": 5,
+      "min": 1,
+      "max": 25,
+      "label": "Max Results",
+      "description": "Maximum search results per comic."
+    }
+  }
+}

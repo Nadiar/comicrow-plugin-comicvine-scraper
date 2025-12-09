@@ -1,0 +1,105 @@
+name: Build & Release Plugin
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+    
+    # Need to build PluginSystem first to get the SDK
+    - name: Add ComicRow NuGet source
+      run: |
+        dotnet nuget add source https://nuget.pkg.github.com/Nadiar/index.json --name github --username Nadiar --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text
+      continue-on-error: true
+    
+    - name: Restore dependencies
+      run: dotnet restore
+    
+    - name: Build
+      run: dotnet build -c Release --no-restore
+    
+    - name: Get version from manifest
+      id: get_version
+      shell: pwsh
+      run: |
+        $manifest = Get-Content manifest.json | ConvertFrom-Json
+        echo "VERSION=$($manifest.version)" >> $env:GITHUB_OUTPUT
+        echo "PLUGIN_NAME=$($manifest.name -replace ' ', '')" >> $env:GITHUB_OUTPUT
+    
+    - name: Create .crowplugin package
+      shell: pwsh
+      run: |
+        $outputPath = "bin/Release/net48"
+        $packageName = "${{ steps.get_version.outputs.PLUGIN_NAME }}-${{ steps.get_version.outputs.VERSION }}.crowplugin"
+        
+        # Create ZIP archive as .crowplugin
+        Compress-Archive -Path "$outputPath/*" -DestinationPath $packageName -Force
+        
+        echo "PACKAGE_PATH=$packageName" >> $env:GITHUB_OUTPUT
+    
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.get_version.outputs.PLUGIN_NAME }}-${{ steps.get_version.outputs.VERSION }}
+        path: "*.crowplugin"
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    permissions:
+      contents: write
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+    
+    - name: Get version from manifest
+      id: get_version
+      run: |
+        VERSION=$(jq -r '.version' manifest.json)
+        PLUGIN_NAME=$(jq -r '.name | gsub(" "; "")' manifest.json)
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        echo "PLUGIN_NAME=$PLUGIN_NAME" >> $GITHUB_OUTPUT
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: v${{ steps.get_version.outputs.VERSION }}
+        body: |
+          ## Comic Vine Scraper v${{ steps.get_version.outputs.VERSION }}
+          
+          Scrape comic metadata from Comic Vine with smart matching and batch processing.
+          
+          ### Installation
+          1. Download the `.crowplugin` file below
+          2. In ComicRow, go to Settings → Plugins → Install
+          3. Select the downloaded file
+          
+          ### Requirements
+          - ComicRow 1.0 or later
+          - Comic Vine API key (free from comicvine.gamespot.com/api/)
+          
+          ### Changes
+          See commit history for changes in this release.
+        files: artifacts/**/*.crowplugin
+        draft: false
+        prerelease: ${{ contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}

@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    
+    <!-- Plugin metadata -->
+    <AssemblyTitle>ComicVine Scraper</AssemblyTitle>
+    <AssemblyName>ComicVineScraperPlugin</AssemblyName>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
+    <Description>Scrape comic metadata from ComicVine with smart matching and batch processing</Description>
+    <Authors>ComicRow</Authors>
+    
+    <!-- Packaging -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Reference PluginSystem directly during development -->
+    <ProjectReference Include="..\ComicRow\PluginSystem\PluginSystem.csproj" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <!-- Copy manifest.json to output -->
+  <ItemGroup>
+    <None Update="manifest.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="icon.png" Condition="Exists('icon.png')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- Create .crowplugin package -->
+  <Target Name="PackPlugin" AfterTargets="Build" Condition="'$(PackPluginOnBuild)' == 'true'">
+    <PropertyGroup>
+      <PluginPackageName>ComicVineScraper-$(FileVersion).crowplugin</PluginPackageName>
+    </PropertyGroup>
+    <ZipDirectory 
+      SourceDirectory="$(OutputPath)" 
+      DestinationFile="$(OutputPath)..\$(PluginPackageName)"
+      Overwrite="true" />
+    <Message Importance="High" Text="Created plugin package: $(PluginPackageName)" />
+  </Target>
+
+</Project>
