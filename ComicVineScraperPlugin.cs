@@ -12,8 +12,9 @@ namespace ComicRow.Plugins.ComicVineScraper
     /// Comic Vine Scraper plugin for ComicRow.
     /// Scrapes comic metadata from Comic Vine (comicvine.gamespot.com).
     /// Implements IPluginApiProvider to expose REST API endpoints.
+    /// Implements IScheduledTaskPlugin for per-book scanning via Task Scheduler.
     /// </summary>
-    public class ComicVineScraperPlugin : IComicContextMenuPlugin, ILibraryScanPlugin, IPluginApiProvider
+    public class ComicVineScraperPlugin : IComicContextMenuPlugin, ILibraryScanPlugin, IScheduledTaskPlugin, IPluginApiProvider
     {
         private IPluginContext? _context;
         
@@ -602,7 +603,68 @@ namespace ComicRow.Plugins.ComicVineScraper
             };
         }
 
-        #region ILibraryScanPlugin Implementation
+        #region IScheduledTaskPlugin Implementation
+
+        public IReadOnlyList<ScheduledTaskDefinition> GetScheduledTasks()
+        {
+            return new List<ScheduledTaskDefinition>
+            {
+                new ScheduledTaskDefinition
+                {
+                    TaskId = "auto-scrape-new-comics",
+                    Name = "Auto-Scrape New Comics",
+                    Description = "Automatically scrape metadata from Comic Vine for newly imported comics during library scan",
+                    TriggerType = TaskTriggerType.LibraryScanPerBook,
+                    SortOrder = 50, // Run early in the per-book processing chain
+                    EnabledByDefault = false, // User must enable via settings
+                    CanDisable = true,
+                    AllowManualRun = false, // Per-book tasks can't be run manually
+                    Category = "Metadata",
+                    ProcessOnlyNewBooks = true
+                }
+            };
+        }
+
+        public Task<PluginActionResult> ExecuteTaskAsync(string taskId, CancellationToken cancellationToken = default)
+        {
+            // This plugin only has per-book tasks, no standalone scheduled tasks
+            return Task.FromResult(PluginActionResult.Ok($"Task {taskId} is a per-book task"));
+        }
+
+        public async Task<PluginActionResult> ExecutePerBookTaskAsync(string taskId, ScannedBookContext context, CancellationToken cancellationToken = default)
+        {
+            if (taskId != "auto-scrape-new-comics")
+                return PluginActionResult.Fail($"Unknown task: {taskId}");
+
+            if (_context == null)
+                return PluginActionResult.Fail("Plugin context not initialized");
+
+            // Only process new comics with valid IDs
+            if (!context.IsNew || context.ComicId == null)
+                return PluginActionResult.Ok("Skipped - not a new comic");
+
+            try
+            {
+                _context.Info($"Auto-scraping Comic Vine for: {context.FileName}");
+                var result = await ExecuteAsync(new[] { context.ComicId.Value }, cancellationToken);
+                
+                if (result.Success && result.ItemsProcessed > 0 && result.ItemsFailed == 0)
+                    return PluginActionResult.Ok($"Successfully scraped metadata for {context.FileName}");
+                else if (result.ItemsFailed > 0)
+                    return PluginActionResult.Fail($"Failed to scrape {context.FileName}");
+                else
+                    return PluginActionResult.Ok($"No match found for {context.FileName}");
+            }
+            catch (Exception ex)
+            {
+                _context.Error($"Error scraping {context.FileName}: {ex.Message}");
+                return PluginActionResult.Fail(ex.Message);
+            }
+        }
+
+        #endregion
+
+        #region ILibraryScanPlugin Implementation (Legacy - kept for backward compatibility)
 
         public async Task OnScanStartAsync(string directoryPath, CancellationToken cancellationToken = default)
         {
@@ -617,18 +679,12 @@ namespace ComicRow.Plugins.ComicVineScraper
             }
         }
 
-        public async Task OnComicScannedAsync(ScanComicContext context, CancellationToken cancellationToken = default)
+        public Task OnComicScannedAsync(ScanComicContext context, CancellationToken cancellationToken = default)
         {
-            if (_context == null) return;
-            
-            var autoScanStr = await _context.GetValueAsync("scan_on_library_import");
-            var autoScan = autoScanStr == "true";
-            
-            if (!autoScan || !context.IsNew || context.ComicId == null)
-                return;
-
-            // Only process new comics during scan if auto-scan is enabled
-            await ExecuteAsync(new[] { context.ComicId.Value }, cancellationToken);
+            // DEPRECATED: Per-book processing now handled via IScheduledTaskPlugin.ExecutePerBookTaskAsync
+            // This method is kept for backward compatibility with older ComicRow versions
+            // that don't support the Task Scheduler system.
+            return Task.CompletedTask;
         }
 
         public Task OnFileScannedAsync(ScanFileContext context, CancellationToken cancellationToken = default)

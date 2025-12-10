@@ -1,5 +1,6 @@
 {
   "$schema": "https://comicrow.com/schemas/crowplugin-manifest-v1.json",
+  "id": "comicvine-scraper",
   "name": "ComicVine Scraper",
   "version": "1.2.0",
   "author": "ComicRow",
@@ -12,14 +13,13 @@
     "OnUnload"
   ],
   "RequiredPermissions": {
-    "FileSystem": ["comic:read"],
     "Http": ["comicvine.gamespot.com"],
-    "Database": ["comic:metadata"],
-    "Reason": "Reads comic information to search Comic Vine and stores matched metadata"
+    "Database": ["comic:metadata:write"],
+    "Reason": "Fetches metadata from ComicVine and saves to your library"
   },
   "OptionalPermissions": {
-    "FileSystem": ["comic:write"],
-    "Reason": "Update comic file embedded metadata (ComicInfo.xml)"
+    "FileSystem": ["file:comic:write"],
+    "Reason": "Update ComicInfo.xml inside comic archives with matched metadata"
   },
   "api": {
     "enabled": true,
