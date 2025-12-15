@@ -4,6 +4,8 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using ComicRow.PluginSystem;
+using ComicRow.Plugins.ComicVineScraper.Models;
+using ComicRow.Plugins.ComicVineScraper.Services;
 using Newtonsoft.Json;
 
 namespace ComicRow.Plugins.ComicVineScraper
@@ -11,25 +13,36 @@ namespace ComicRow.Plugins.ComicVineScraper
     /// <summary>
     /// Comic Vine Scraper plugin for ComicRow.
     /// Scrapes comic metadata from Comic Vine (comicvine.gamespot.com).
-    /// Implements IPluginApiProvider to expose REST API endpoints.
-    /// Implements IScheduledTaskPlugin for per-book scanning via Task Scheduler.
+    /// 
+    /// This plugin provides the SOLE implementation of ComicVine integration.
+    /// The built-in MetadataScraper has been deprecated in favor of this plugin-based approach.
+    /// 
+    /// Features:
+    /// - Rate-limited API access (200 requests/hour/endpoint, 1s between requests)
+    /// - Volume-enhanced search for better matching
+    /// - Imprint-to-publisher mapping
+    /// - Sophisticated string similarity matching
+    /// - Full credit parsing (writers, artists, colorists, etc.)
     /// </summary>
     public class ComicVineScraperPlugin : IComicContextMenuPlugin, ILibraryScanPlugin, IScheduledTaskPlugin, IPluginApiProvider
     {
         private IPluginContext? _context;
+        private ComicVineApiClient? _apiClient;
         
         public string Name => "ComicVine Scraper";
-        public string Version => "1.2.0";
+        public string Version => "2.0.0";
 
         public void SetContext(IPluginContext context)
         {
             _context = context;
-            _context.Info("ComicVine Scraper plugin initialized");
+            _apiClient = new ComicVineApiClient(context);
+            _context.Info("ComicVine Scraper v2.0 initialized");
         }
 
         public void OnUnload()
         {
             _context?.Info("ComicVine Scraper plugin unloading");
+            _apiClient = null;
         }
 
         #region IPluginApiProvider Implementation
@@ -38,111 +51,55 @@ namespace ComicRow.Plugins.ComicVineScraper
         {
             return new List<PluginApiEndpoint>
             {
-                new PluginApiEndpoint
-                {
-                    Route = "search",
-                    Methods = new[] { "POST" },
-                    Summary = "Search ComicVine for comics",
-                    Description = "Search the ComicVine database for comic issues matching the provided criteria",
-                    Tags = new[] { "ComicVine" },
-                    RequestBody = new PluginApiRequestBody
+                // Search endpoints
+                CreateEndpoint("search", new[] { "POST" }, "Search ComicVine for comics",
+                    "Search the ComicVine database for comic issues matching the provided criteria",
+                    new Dictionary<string, PluginApiProperty>
                     {
-                        Description = "Search criteria",
-                        Required = true,
-                        Content = new Dictionary<string, PluginApiSchema>
-                        {
-                            ["application/json"] = new PluginApiSchema
-                            {
-                                Type = "object",
-                                Properties = new Dictionary<string, PluginApiProperty>
-                                {
-                                    ["query"] = new PluginApiProperty { Type = "string", Description = "Search query (series name, title, etc.)" },
-                                    ["issueNumber"] = new PluginApiProperty { Type = "string", Description = "Issue number (optional)", Nullable = true },
-                                    ["year"] = new PluginApiProperty { Type = "integer", Description = "Publication year (optional)", Nullable = true },
-                                    ["limit"] = new PluginApiProperty { Type = "integer", Description = "Max results (default: 10)", Nullable = true }
-                                },
-                                Example = new { query = "Batman", issueNumber = "1", limit = 10 }
-                            }
-                        }
-                    },
-                    Responses = new Dictionary<string, PluginApiResponseDef>
+                        ["query"] = new() { Type = "string", Description = "Search query (series name, title, etc.)" },
+                        ["issueNumber"] = new() { Type = "string", Description = "Issue number (optional)", Nullable = true },
+                        ["year"] = new() { Type = "integer", Description = "Publication year (optional)", Nullable = true },
+                        ["limit"] = new() { Type = "integer", Description = "Max results (default: 25)", Nullable = true },
+                        ["useVolumeSearch"] = new() { Type = "boolean", Description = "Use volume-enhanced search (recommended)", Nullable = true }
+                    }),
+                
+                CreateEndpoint("search/volumes", new[] { "POST" }, "Search ComicVine for volumes (series)",
+                    "Search for volumes/series to browse their issues",
+                    new Dictionary<string, PluginApiProperty>
                     {
-                        ["200"] = new PluginApiResponseDef 
-                        { 
-                            Description = "Search results",
-                            Content = new Dictionary<string, PluginApiSchema>
-                            {
-                                ["application/json"] = new PluginApiSchema
-                                {
-                                    Type = "object",
-                                    Properties = new Dictionary<string, PluginApiProperty>
-                                    {
-                                        ["results"] = new PluginApiProperty { Type = "array", Description = "Matching comic issues" },
-                                        ["totalResults"] = new PluginApiProperty { Type = "integer", Description = "Total matches found" }
-                                    }
-                                }
-                            }
-                        },
-                        ["400"] = new PluginApiResponseDef { Description = "Invalid request" },
-                        ["401"] = new PluginApiResponseDef { Description = "API key not configured" }
-                    }
-                },
-                new PluginApiEndpoint
-                {
-                    Route = "scrape",
-                    Methods = new[] { "POST" },
-                    Summary = "Scrape metadata for comics",
-                    Description = "Scrape and apply ComicVine metadata to specified comics",
-                    Tags = new[] { "ComicVine" },
-                    RequestBody = new PluginApiRequestBody
-                    {
-                        Description = "Comics to scrape",
-                        Required = true,
-                        Content = new Dictionary<string, PluginApiSchema>
-                        {
-                            ["application/json"] = new PluginApiSchema
-                            {
-                                Type = "object",
-                                Properties = new Dictionary<string, PluginApiProperty>
-                                {
-                                    ["comicIds"] = new PluginApiProperty { Type = "array", Description = "Array of comic IDs to scrape" },
-                                    ["autoApplyThreshold"] = new PluginApiProperty { Type = "number", Description = "Confidence threshold (0-1)", Nullable = true },
-                                    ["mergeMode"] = new PluginApiProperty { Type = "boolean", Description = "Only fill empty fields", Nullable = true }
-                                },
-                                Example = new { comicIds = new[] { "guid-here" }, autoApplyThreshold = 0.85, mergeMode = true }
-                            }
-                        }
-                    },
-                    Responses = new Dictionary<string, PluginApiResponseDef>
-                    {
-                        ["200"] = new PluginApiResponseDef { Description = "Scrape results" },
-                        ["400"] = new PluginApiResponseDef { Description = "Invalid request" }
-                    }
-                },
+                        ["query"] = new() { Type = "string", Description = "Series name to search for" },
+                        ["year"] = new() { Type = "integer", Description = "Start year filter (optional)", Nullable = true }
+                    }),
+                
+                // Issue endpoints
                 new PluginApiEndpoint
                 {
                     Route = "issue/{issueId}",
                     Methods = new[] { "GET" },
                     Summary = "Get ComicVine issue details",
-                    Description = "Fetch detailed information about a specific ComicVine issue",
+                    Description = "Fetch detailed metadata for a specific ComicVine issue including credits",
                     Tags = new[] { "ComicVine" },
                     Parameters = new List<PluginApiParameter>
                     {
-                        new PluginApiParameter
-                        {
-                            Name = "issueId",
-                            In = "path",
-                            Required = true,
-                            Description = "ComicVine issue ID",
-                            Type = "integer"
-                        }
-                    },
-                    Responses = new Dictionary<string, PluginApiResponseDef>
-                    {
-                        ["200"] = new PluginApiResponseDef { Description = "Issue details" },
-                        ["404"] = new PluginApiResponseDef { Description = "Issue not found" }
+                        new() { Name = "issueId", In = "path", Required = true, Description = "ComicVine issue ID", Type = "integer" }
                     }
                 },
+                
+                // Volume endpoints
+                new PluginApiEndpoint
+                {
+                    Route = "volume/{volumeId}/issues",
+                    Methods = new[] { "GET" },
+                    Summary = "Get issues in a volume",
+                    Description = "List all issues in a ComicVine volume (series)",
+                    Tags = new[] { "ComicVine" },
+                    Parameters = new List<PluginApiParameter>
+                    {
+                        new() { Name = "volumeId", In = "path", Required = true, Description = "ComicVine volume ID", Type = "integer" }
+                    }
+                },
+                
+                // Match and apply endpoints
                 new PluginApiEndpoint
                 {
                     Route = "match/{comicId}",
@@ -152,52 +109,56 @@ namespace ComicRow.Plugins.ComicVineScraper
                     Tags = new[] { "ComicVine" },
                     Parameters = new List<PluginApiParameter>
                     {
-                        new PluginApiParameter
-                        {
-                            Name = "comicId",
-                            In = "path",
-                            Required = true,
-                            Description = "Comic ID to find matches for",
-                            Type = "string"
-                        }
-                    },
-                    Responses = new Dictionary<string, PluginApiResponseDef>
-                    {
-                        ["200"] = new PluginApiResponseDef { Description = "Potential matches with confidence scores" },
-                        ["404"] = new PluginApiResponseDef { Description = "Comic not found" }
+                        new() { Name = "comicId", In = "path", Required = true, Description = "Comic ID to find matches for", Type = "string" }
                     }
                 },
+                
+                CreateEndpoint("apply", new[] { "POST" }, "Apply ComicVine match to a comic",
+                    "Apply metadata from a specific ComicVine issue to a comic in the library",
+                    new Dictionary<string, PluginApiProperty>
+                    {
+                        ["comicId"] = new() { Type = "string", Description = "Comic ID to update" },
+                        ["comicVineId"] = new() { Type = "integer", Description = "ComicVine issue ID to apply" },
+                        ["mergeMode"] = new() { Type = "boolean", Description = "Only fill empty fields", Nullable = true }
+                    }),
+                
+                CreateEndpoint("scrape", new[] { "POST" }, "Batch scrape comics",
+                    "Scrape and apply ComicVine metadata to multiple comics",
+                    new Dictionary<string, PluginApiProperty>
+                    {
+                        ["comicIds"] = new() { Type = "array", Description = "Array of comic IDs to scrape" },
+                        ["autoApplyThreshold"] = new() { Type = "number", Description = "Confidence threshold (0-1)", Nullable = true },
+                        ["mergeMode"] = new() { Type = "boolean", Description = "Only fill empty fields", Nullable = true }
+                    }),
+                
+                // Rate limit endpoint
                 new PluginApiEndpoint
                 {
-                    Route = "apply",
-                    Methods = new[] { "POST" },
-                    Summary = "Apply ComicVine match to a comic",
-                    Description = "Apply metadata from a specific ComicVine issue to a comic in the library",
-                    Tags = new[] { "ComicVine" },
-                    RequestBody = new PluginApiRequestBody
+                    Route = "ratelimits",
+                    Methods = new[] { "GET" },
+                    Summary = "Get rate limit status",
+                    Description = "Get current rate limit usage for each API endpoint",
+                    Tags = new[] { "ComicVine" }
+                }
+            };
+        }
+        
+        private static PluginApiEndpoint CreateEndpoint(string route, string[] methods, string summary, string description, Dictionary<string, PluginApiProperty> properties)
+        {
+            return new PluginApiEndpoint
+            {
+                Route = route,
+                Methods = methods,
+                Summary = summary,
+                Description = description,
+                Tags = new[] { "ComicVine" },
+                RequestBody = new PluginApiRequestBody
+                {
+                    Description = description,
+                    Required = true,
+                    Content = new Dictionary<string, PluginApiSchema>
                     {
-                        Description = "Match to apply",
-                        Required = true,
-                        Content = new Dictionary<string, PluginApiSchema>
-                        {
-                            ["application/json"] = new PluginApiSchema
-                            {
-                                Type = "object",
-                                Properties = new Dictionary<string, PluginApiProperty>
-                                {
-                                    ["comicId"] = new PluginApiProperty { Type = "string", Description = "Comic ID to update" },
-                                    ["comicVineId"] = new PluginApiProperty { Type = "integer", Description = "ComicVine issue ID to apply" },
-                                    ["mergeMode"] = new PluginApiProperty { Type = "boolean", Description = "Only fill empty fields", Nullable = true }
-                                },
-                                Example = new { comicId = "guid-here", comicVineId = 123456, mergeMode = true }
-                            }
-                        }
-                    },
-                    Responses = new Dictionary<string, PluginApiResponseDef>
-                    {
-                        ["200"] = new PluginApiResponseDef { Description = "Metadata applied successfully" },
-                        ["400"] = new PluginApiResponseDef { Description = "Invalid request" },
-                        ["404"] = new PluginApiResponseDef { Description = "Comic or issue not found" }
+                        ["application/json"] = new PluginApiSchema { Type = "object", Properties = properties }
                     }
                 }
             };
@@ -205,27 +166,39 @@ namespace ComicRow.Plugins.ComicVineScraper
 
         public async Task<PluginApiResponse> HandleRequestAsync(PluginApiRequest request, CancellationToken cancellationToken = default)
         {
-            if (_context == null)
-                return PluginApiResponse.Error("Plugin context not initialized");
+            if (_context == null || _apiClient == null)
+                return PluginApiResponse.Error("Plugin not initialized");
 
-            // Check required permission for HTTP access
+            _context.Debug($"[PLUGIN] HandleRequestAsync called - Route: {request.Route}, Method: {request.Method}");
+            
             if (!_context.HasPermission("http:comicvine.gamespot.com"))
-            {
-                _context.Warning("HTTP permission denied for comicvine.gamespot.com");
-                return PluginApiResponse.Error("HTTP permission denied");
-            }
+                return PluginApiResponse.Error("HTTP permission denied for comicvine.gamespot.com");
 
             try
             {
+                // Ensure API key is configured
+                await EnsureApiKeyAsync();
+                
                 return request.Route switch
                 {
                     "search" => await HandleSearchAsync(request, cancellationToken),
-                    "scrape" => await HandleScrapeAsync(request, cancellationToken),
+                    "search/volumes" => await HandleSearchVolumesAsync(request, cancellationToken),
                     var r when r.StartsWith("issue/") => await HandleGetIssueAsync(request, cancellationToken),
+                    var r when r.StartsWith("volume/") && r.EndsWith("/issues") => await HandleGetVolumeIssuesAsync(request, cancellationToken),
                     var r when r.StartsWith("match/") => await HandleGetMatchesAsync(request, cancellationToken),
                     "apply" => await HandleApplyAsync(request, cancellationToken),
+                    "scrape" => await HandleScrapeAsync(request, cancellationToken),
+                    "ratelimits" => HandleGetRateLimits(),
                     _ => PluginApiResponse.NotFound($"Unknown route: {request.Route}")
                 };
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("API key"))
+            {
+                return new PluginApiResponse { StatusCode = 401, Body = new { error = ex.Message } };
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("Rate limit"))
+            {
+                return new PluginApiResponse { StatusCode = 429, Body = new { error = ex.Message } };
             }
             catch (Exception ex)
             {
@@ -234,68 +207,80 @@ namespace ComicRow.Plugins.ComicVineScraper
             }
         }
 
-        private async Task<PluginApiResponse> HandleSearchAsync(PluginApiRequest request, CancellationToken cancellationToken)
+        private async Task EnsureApiKeyAsync()
         {
-            if (string.IsNullOrEmpty(request.Body))
-                return PluginApiResponse.BadRequest("Request body required");
-
-            var searchRequest = JsonConvert.DeserializeObject<SearchRequest>(request.Body);
-            if (searchRequest == null || string.IsNullOrEmpty(searchRequest.Query))
-                return PluginApiResponse.BadRequest("Query is required");
-
-            var apiKey = await GetApiKeyAsync();
-            if (string.IsNullOrEmpty(apiKey))
-                return new PluginApiResponse { StatusCode = 401, Body = new { error = "Comic Vine API key not configured" } };
-
-            var limit = searchRequest.Limit ?? 10;
-            var searchUrl = $"https://comicvine.gamespot.com/api/search/?api_key={apiKey}&format=json&resources=issue&query={Uri.EscapeDataString(searchRequest.Query)}&limit={limit}";
+            if (_apiClient!.IsConfigured)
+                return;
             
-            var content = await _context!.GetAsync(searchUrl);
-            var result = JsonConvert.DeserializeObject<ComicVineSearchResult>(content);
-
-            return PluginApiResponse.Ok(new
-            {
-                results = result?.Results ?? new List<ComicVineIssue>(),
-                totalResults = result?.Results?.Count ?? 0
-            });
+            // Try plugin's own setting first (from manifest.json settings.api_key)
+            var apiKey = await _context!.GetValueAsync("api_key");
+            
+            // Fall back to legacy locations for backward compatibility
+            if (string.IsNullOrEmpty(apiKey))
+                apiKey = await _context.GetValueAsync("Credentials", "ComicVine:ApiKey");
+            
+            if (string.IsNullOrEmpty(apiKey))
+                apiKey = await _context.GetValueAsync("MetadataScraper", "ComicVine:ApiKey");
+            
+            if (string.IsNullOrEmpty(apiKey))
+                throw new InvalidOperationException("Comic Vine API key not configured. Go to Settings → Plugins → ComicVine Scraper to configure your API key. Get a free key at https://comicvine.gamespot.com/api/");
+            
+            _apiClient.SetApiKey(apiKey);
         }
 
-        private async Task<PluginApiResponse> HandleScrapeAsync(PluginApiRequest request, CancellationToken cancellationToken)
+        #region API Handlers
+
+        private async Task<PluginApiResponse> HandleSearchAsync(PluginApiRequest request, CancellationToken cancellationToken)
         {
-            // Check write permission
-            if (!_context!.HasPermission("comic:metadata"))
-            {
-                return PluginApiResponse.Error("Permission denied: comic:metadata");
-            }
+            var req = JsonConvert.DeserializeObject<SearchRequest>(request.Body ?? "{}");
+            if (req == null || string.IsNullOrEmpty(req.Query))
+                return PluginApiResponse.BadRequest("Query is required");
 
-            if (string.IsNullOrEmpty(request.Body))
-                return PluginApiResponse.BadRequest("Request body required");
+            int? issueNum = null;
+            if (!string.IsNullOrEmpty(req.IssueNumber) && int.TryParse(req.IssueNumber, out var num))
+                issueNum = num;
 
-            var scrapeRequest = JsonConvert.DeserializeObject<ScrapeRequest>(request.Body);
-            if (scrapeRequest?.ComicIds == null || scrapeRequest.ComicIds.Length == 0)
-                return PluginApiResponse.BadRequest("comicIds array is required");
+            var useVolumeSearch = req.UseVolumeSearch ?? true; // Default to volume-enhanced search
+            
+            var results = useVolumeSearch
+                ? await _apiClient!.SearchWithVolumeEnhancementAsync(req.Query, issueNum, req.Year, cancellationToken)
+                : await _apiClient!.SearchIssuesAsync(req.Query, issueNum, req.Year, cancellationToken);
 
-            var result = await ExecuteAsync(scrapeRequest.ComicIds, cancellationToken);
-            return PluginApiResponse.Ok(result);
+            return PluginApiResponse.Ok(new { results, totalResults = results.Count });
+        }
+
+        private async Task<PluginApiResponse> HandleSearchVolumesAsync(PluginApiRequest request, CancellationToken cancellationToken)
+        {
+            var req = JsonConvert.DeserializeObject<VolumeSearchRequest>(request.Body ?? "{}");
+            if (req == null || string.IsNullOrEmpty(req.Query))
+                return PluginApiResponse.BadRequest("Query is required");
+
+            var results = await _apiClient!.SearchVolumesAsync(req.Query, req.Year, cancellationToken);
+            return PluginApiResponse.Ok(new { results, totalResults = results.Count });
         }
 
         private async Task<PluginApiResponse> HandleGetIssueAsync(PluginApiRequest request, CancellationToken cancellationToken)
         {
-            if (!request.RouteValues.TryGetValue("issueId", out var issueIdStr) || !int.TryParse(issueIdStr, out var issueId))
+            if (!request.RouteValues.TryGetValue("issueId", out var issueId))
                 return PluginApiResponse.BadRequest("Invalid issue ID");
 
-            var apiKey = await GetApiKeyAsync();
-            if (string.IsNullOrEmpty(apiKey))
-                return new PluginApiResponse { StatusCode = 401, Body = new { error = "Comic Vine API key not configured" } };
-
-            var url = $"https://comicvine.gamespot.com/api/issue/4000-{issueId}/?api_key={apiKey}&format=json";
-            var content = await _context!.GetAsync(url);
-            var result = JsonConvert.DeserializeObject<ComicVineIssueResult>(content);
-
-            if (result?.Results == null)
+            var metadata = await _apiClient!.GetIssueMetadataAsync(issueId, cancellationToken);
+            if (metadata == null)
                 return PluginApiResponse.NotFound($"Issue {issueId} not found");
 
-            return PluginApiResponse.Ok(result.Results);
+            return PluginApiResponse.Ok(metadata);
+        }
+
+        private async Task<PluginApiResponse> HandleGetVolumeIssuesAsync(PluginApiRequest request, CancellationToken cancellationToken)
+        {
+            // Route: volume/{volumeId}/issues
+            var parts = request.Route.Split('/');
+            if (parts.Length < 2)
+                return PluginApiResponse.BadRequest("Invalid volume ID");
+            
+            var volumeId = parts[1];
+            var issues = await _apiClient!.GetVolumeIssuesAsync(volumeId, cancellationToken);
+            return PluginApiResponse.Ok(new { issues, totalIssues = issues.Count });
         }
 
         private async Task<PluginApiResponse> HandleGetMatchesAsync(PluginApiRequest request, CancellationToken cancellationToken)
@@ -303,192 +288,135 @@ namespace ComicRow.Plugins.ComicVineScraper
             if (!request.RouteValues.TryGetValue("comicId", out var comicIdStr) || !Guid.TryParse(comicIdStr, out var comicId))
                 return PluginApiResponse.BadRequest("Invalid comic ID");
 
-            // Check read permission
             if (!_context!.HasPermission("comic:read"))
-            {
                 return PluginApiResponse.Error("Permission denied: comic:read");
-            }
 
             var comic = await _context.GetComicMetadataAsync(comicId);
             if (comic == null)
                 return PluginApiResponse.NotFound($"Comic {comicId} not found");
 
-            var apiKey = await GetApiKeyAsync();
-            if (string.IsNullOrEmpty(apiKey))
-                return new PluginApiResponse { StatusCode = 401, Body = new { error = "Comic Vine API key not configured" } };
-
             var searchTerm = !string.IsNullOrEmpty(comic.Series) ? comic.Series : comic.FileName;
-            var searchUrl = $"https://comicvine.gamespot.com/api/search/?api_key={apiKey}&format=json&resources=issue&query={Uri.EscapeDataString(searchTerm)}&limit=10";
-            
-            var content = await _context.GetAsync(searchUrl);
-            var result = JsonConvert.DeserializeObject<ComicVineSearchResult>(content);
+            int? issueNum = null;
+            if (!string.IsNullOrEmpty(comic.Number) && int.TryParse(comic.Number, out var num))
+                issueNum = num;
 
-            var matches = new List<object>();
-            if (result?.Results != null)
-            {
-                foreach (var issue in result.Results)
-                {
-                    var confidence = CalculateConfidence(comic, issue);
-                    matches.Add(new
-                    {
-                        comicVineId = issue.Id,
-                        name = issue.Name,
-                        issueNumber = issue.IssueNumber,
-                        volume = issue.Volume?.Name,
-                        publisher = issue.Volume?.Publisher?.Name,
-                        coverDate = issue.CoverDate,
-                        confidence
-                    });
-                }
-            }
+            var results = await _apiClient!.SearchWithVolumeEnhancementAsync(searchTerm, issueNum, comic.Year, cancellationToken);
 
             return PluginApiResponse.Ok(new
             {
-                comic = new { comic.Series, comic.Number, comic.FileName },
-                matches = matches.OrderByDescending(m => ((dynamic)m).confidence).ToList()
+                comic = new { comic.Series, comic.Number, comic.FileName, comic.Year },
+                matches = results.Select(r => new
+                {
+                    comicVineId = r.Id,
+                    name = r.Title,
+                    issueNumber = r.IssueNumber,
+                    series = r.Series,
+                    publisher = r.Publisher,
+                    year = r.Year,
+                    coverUrl = r.CoverUrl,
+                    confidence = r.MatchScore
+                }).ToList()
             });
         }
 
         private async Task<PluginApiResponse> HandleApplyAsync(PluginApiRequest request, CancellationToken cancellationToken)
         {
-            // Check write permission
-            if (!_context!.HasPermission("comic:metadata"))
-            {
-                return PluginApiResponse.Error("Permission denied: comic:metadata");
-            }
+            if (!_context!.HasPermission("comic:metadata:write"))
+                return PluginApiResponse.Error("Permission denied: comic:metadata:write");
 
-            if (string.IsNullOrEmpty(request.Body))
-                return PluginApiResponse.BadRequest("Request body required");
-
-            var applyRequest = JsonConvert.DeserializeObject<ApplyRequest>(request.Body);
-            if (applyRequest == null || !Guid.TryParse(applyRequest.ComicId, out var comicId))
+            var req = JsonConvert.DeserializeObject<ApplyRequest>(request.Body ?? "{}");
+            if (req == null || !Guid.TryParse(req.ComicId, out var comicId))
                 return PluginApiResponse.BadRequest("Valid comicId is required");
 
-            var apiKey = await GetApiKeyAsync();
-            if (string.IsNullOrEmpty(apiKey))
-                return new PluginApiResponse { StatusCode = 401, Body = new { error = "Comic Vine API key not configured" } };
+            var metadata = await _apiClient!.GetIssueMetadataAsync(req.ComicVineId.ToString(), cancellationToken);
+            if (metadata == null)
+                return PluginApiResponse.NotFound($"ComicVine issue {req.ComicVineId} not found");
 
-            // Fetch issue details
-            var url = $"https://comicvine.gamespot.com/api/issue/4000-{applyRequest.ComicVineId}/?api_key={apiKey}&format=json";
-            var content = await _context.GetAsync(url);
-            var result = JsonConvert.DeserializeObject<ComicVineIssueResult>(content);
-
-            if (result?.Results == null)
-                return PluginApiResponse.NotFound($"ComicVine issue {applyRequest.ComicVineId} not found");
-
-            var issue = result.Results;
             var update = new ComicMetadataUpdate
             {
                 ComicId = comicId,
-                Series = issue.Volume?.Name,
-                Number = issue.IssueNumber,
-                Title = issue.Name,
-                Summary = StripHtml(issue.Description),
-                Year = issue.CoverDate?.Year,
-                Publisher = issue.Volume?.Publisher?.Name
+                Series = metadata.Series,
+                Number = metadata.IssueNumber,
+                Count = await IsIssueCountSyncEnabled() ? metadata.Count : null,
+                Title = metadata.Title,
+                Summary = metadata.Summary,
+                Year = metadata.Year,
+                Month = metadata.Month,
+                Publisher = metadata.Publisher,
+                Imprint = metadata.Imprint,
+                Writer = string.Join(", ", metadata.Writers),
+                Penciller = string.Join(", ", metadata.Pencillers),
+                Inker = string.Join(", ", metadata.Inkers),
+                Colorist = string.Join(", ", metadata.Colorists),
+                Letterer = string.Join(", ", metadata.Letterers),
+                CoverArtist = string.Join(", ", metadata.CoverArtists),
+                Editor = string.Join(", ", metadata.Editors),
+                // Note: Characters, Teams, Locations not supported by ComicMetadataUpdate
+                // Consider adding them to the schema or storing via Tags
+                StoryArc = string.Join(", ", metadata.StoryArcs),
+                Web = metadata.Web
             };
 
             var success = await _context.UpdateComicMetadataAsync(comicId, update);
             if (success)
             {
-                _context.Info($"Applied ComicVine metadata from issue {applyRequest.ComicVineId} to comic {comicId}");
+                _context.Info($"Applied ComicVine metadata from issue {req.ComicVineId} to comic {comicId}");
                 return PluginApiResponse.Ok(new { message = "Metadata applied successfully", update });
             }
-            else
-            {
-                return PluginApiResponse.Error("Failed to update comic metadata");
-            }
-        }
-
-        private async Task<string?> GetApiKeyAsync()
-        {
-            return await _context!.GetValueAsync("api_key");
-        }
-
-        private double CalculateConfidence(ComicMetadata comic, ComicVineIssue issue)
-        {
-            double score = 0.0;
             
-            // Series name match
-            if (!string.IsNullOrEmpty(comic.Series) && !string.IsNullOrEmpty(issue.Volume?.Name))
+            return PluginApiResponse.Error("Failed to update comic metadata");
+        }
+
+        private async Task<PluginApiResponse> HandleScrapeAsync(PluginApiRequest request, CancellationToken cancellationToken)
+        {
+            if (!_context!.HasPermission("comic:metadata:write"))
+                return PluginApiResponse.Error("Permission denied: comic:metadata:write");
+
+            var req = JsonConvert.DeserializeObject<ScrapeRequest>(request.Body ?? "{}");
+            if (req?.ComicIds == null || req.ComicIds.Length == 0)
+                return PluginApiResponse.BadRequest("comicIds array is required");
+
+            var result = await ExecuteAsync(req.ComicIds, cancellationToken);
+            return PluginApiResponse.Ok(result);
+        }
+
+        private PluginApiResponse HandleGetRateLimits()
+        {
+            var status = _apiClient!.GetRateLimitStatus();
+            return PluginApiResponse.Ok(new
             {
-                if (comic.Series.Equals(issue.Volume.Name, StringComparison.OrdinalIgnoreCase))
-                    score += 0.5;
-                else if (comic.Series.IndexOf(issue.Volume.Name, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                         issue.Volume.Name.IndexOf(comic.Series, StringComparison.OrdinalIgnoreCase) >= 0)
-                    score += 0.3;
-            }
-
-            // Issue number match
-            if (comic.Number == issue.IssueNumber)
-                score += 0.4;
-
-            // Year match
-            if (comic.Year.HasValue && issue.CoverDate?.Year == comic.Year.Value)
-                score += 0.1;
-
-            return Math.Min(score, 1.0);
+                endpoints = status.Values.ToList(),
+                message = "Rate limits are per endpoint, 200 requests/hour each"
+            });
         }
 
         #endregion
 
-        #region Request/Response DTOs
-
-        private class SearchRequest
-        {
-            [JsonProperty("query")]
-            public string? Query { get; set; }
-            [JsonProperty("issueNumber")]
-            public string? IssueNumber { get; set; }
-            [JsonProperty("year")]
-            public int? Year { get; set; }
-            [JsonProperty("limit")]
-            public int? Limit { get; set; }
-        }
-
-        private class ScrapeRequest
-        {
-            [JsonProperty("comicIds")]
-            public Guid[]? ComicIds { get; set; }
-            [JsonProperty("autoApplyThreshold")]
-            public double? AutoApplyThreshold { get; set; }
-            [JsonProperty("mergeMode")]
-            public bool? MergeMode { get; set; }
-        }
-
-        private class ApplyRequest
-        {
-            [JsonProperty("comicId")]
-            public string? ComicId { get; set; }
-            [JsonProperty("comicVineId")]
-            public int ComicVineId { get; set; }
-            [JsonProperty("mergeMode")]
-            public bool? MergeMode { get; set; }
-        }
-
         #endregion
 
-        /// <summary>
-        /// Execute metadata scraping on selected comics (IComicContextMenuPlugin).
-        /// </summary>
+        #region IComicContextMenuPlugin
+
         public async Task<PluginActionResult> ExecuteAsync(Guid[] comicIds, CancellationToken cancellationToken = default)
         {
-            if (_context == null)
-                return PluginActionResult.Fail("Plugin context not initialized");
+            if (_context == null || _apiClient == null)
+                return PluginActionResult.Fail("Plugin not initialized");
 
-            // Check permissions
             if (!_context.HasPermission("http:comicvine.gamespot.com"))
-            {
                 return PluginActionResult.Fail("HTTP permission denied for comicvine.gamespot.com");
-            }
-            if (!_context.HasPermission("comic:read"))
-            {
-                return PluginActionResult.Fail("Permission denied: comic:read");
-            }
-                
+
+            if (!_context.HasPermission("comic:metadata:write"))
+                return PluginActionResult.Fail("Permission denied: comic:metadata:write");
+
             if (comicIds == null || comicIds.Length == 0)
-            {
                 return PluginActionResult.Fail("No comics selected");
+
+            try
+            {
+                await EnsureApiKeyAsync();
+            }
+            catch (InvalidOperationException ex)
+            {
+                return PluginActionResult.Fail(ex.Message);
             }
 
             _context.Info($"Starting Comic Vine scrape for {comicIds.Length} comics");
@@ -497,18 +425,8 @@ namespace ComicRow.Plugins.ComicVineScraper
             var failed = 0;
             var itemResults = new Dictionary<Guid, string>();
 
-            // Get settings
             var autoApplyThresholdStr = await _context.GetValueAsync("auto_apply_threshold");
             var autoApplyThreshold = string.IsNullOrEmpty(autoApplyThresholdStr) ? 0.85 : double.Parse(autoApplyThresholdStr);
-            
-            var mergeModeStr = await _context.GetValueAsync("merge_mode");
-            var mergeMode = string.IsNullOrEmpty(mergeModeStr) || mergeModeStr == "true";
-
-            var apiKey = await GetApiKeyAsync();
-            if (string.IsNullOrEmpty(apiKey))
-            {
-                return PluginActionResult.Fail("Comic Vine API key not configured. Go to Settings → Plugins → ComicVine Scraper.");
-            }
 
             foreach (var comicId in comicIds)
             {
@@ -517,7 +435,6 @@ namespace ComicRow.Plugins.ComicVineScraper
 
                 try
                 {
-                    // Read comic metadata
                     var comic = await _context.GetComicMetadataAsync(comicId);
                     if (comic == null)
                     {
@@ -526,62 +443,64 @@ namespace ComicRow.Plugins.ComicVineScraper
                         continue;
                     }
 
-                    // Build search query
                     var searchTerm = !string.IsNullOrEmpty(comic.Series) ? comic.Series : comic.FileName;
+                    int? issueNum = null;
+                    if (!string.IsNullOrEmpty(comic.Number) && int.TryParse(comic.Number, out var num))
+                        issueNum = num;
 
-                    var searchUrl = $"https://comicvine.gamespot.com/api/search/?api_key={apiKey}&format=json&resources=issue&query={Uri.EscapeDataString(searchTerm)}";
-                    
-                    var content = await _context.GetAsync(searchUrl);
-                    var searchResult = JsonConvert.DeserializeObject<ComicVineSearchResult>(content);
+                    var results = await _apiClient.SearchWithVolumeEnhancementAsync(searchTerm, issueNum, comic.Year, cancellationToken);
 
-                    if (searchResult?.Results == null || searchResult.Results.Count == 0)
+                    if (results.Count == 0)
                     {
                         itemResults[comicId] = $"No results for: {searchTerm}";
                         failed++;
                         continue;
                     }
 
-                    // Find best match
-                    var bestMatch = FindBestMatch(comic, searchResult.Results, autoApplyThreshold);
-                    
-                    if (bestMatch != null)
+                    var bestMatch = results[0];
+                    _context.Info($"[ComicVine] DEBUG: Found {results.Count} results, bestMatch.MatchScore={bestMatch.MatchScore}, threshold={autoApplyThreshold}");
+                    if ((double)bestMatch.MatchScore >= autoApplyThreshold)
                     {
-                        // Check write permission before updating
-                        if (!_context.HasPermission("comic:metadata"))
+                        var metadata = await _apiClient.GetIssueMetadataAsync(bestMatch.Id, cancellationToken);
+                        if (metadata != null)
                         {
-                            itemResults[comicId] = "Permission denied: comic:metadata";
-                            failed++;
-                            continue;
-                        }
+                            var update = new ComicMetadataUpdate
+                            {
+                                ComicId = comicId,
+                                Series = metadata.Series,
+                                Number = metadata.IssueNumber,
+                                Count = await IsIssueCountSyncEnabled() ? metadata.Count : null,
+                                Title = metadata.Title,
+                                Summary = metadata.Summary,
+                                Year = metadata.Year,
+                                Publisher = metadata.Publisher
+                            };
 
-                        var update = new ComicMetadataUpdate
-                        {
-                            ComicId = comicId,
-                            Series = bestMatch.Volume?.Name,
-                            Number = bestMatch.IssueNumber,
-                            Title = bestMatch.Name,
-                            Summary = StripHtml(bestMatch.Description),
-                            Year = bestMatch.CoverDate?.Year,
-                            Publisher = bestMatch.Volume?.Publisher?.Name
-                        };
-
-                        var success = await _context.UpdateComicMetadataAsync(comicId, update);
-                        if (success)
-                        {
-                            itemResults[comicId] = $"Updated: {comic.FileName}";
-                            processed++;
-                        }
-                        else
-                        {
-                            itemResults[comicId] = $"Failed to update: {comic.FileName}";
-                            failed++;
+                            _context.Info($"[ComicVine] DEBUG: About to call UpdateComicMetadataAsync");
+                            var success = await _context.UpdateComicMetadataAsync(comicId, update);
+                            _context.Info($"[ComicVine] DEBUG: UpdateComicMetadataAsync returned {success}");
+                            if (success)
+                            {
+                                // Save ComicVine IDs as tags for future reference
+                                _context.Info($"[ComicVine] DEBUG: About to set tags for comic {comic.FileName}");
+                                await _context.SetComicTagAsync(comicId, "comicvine:issue", bestMatch.Id);
+                                _context.Info($"[ComicVine] DEBUG: Set comicvine:issue={bestMatch.Id}");
+                                if (!string.IsNullOrEmpty(bestMatch.VolumeId))
+                                {
+                                    await _context.SetComicTagAsync(comicId, "comicvine:volume", bestMatch.VolumeId);
+                                    _context.Info($"[ComicVine] DEBUG: Set comicvine:volume={bestMatch.VolumeId}");
+                                }
+                                _context.Info($"[ComicVine] Saved tags for {comic.FileName}: issue={bestMatch.Id}, volume={bestMatch.VolumeId}");
+                                
+                                itemResults[comicId] = $"Updated: {comic.FileName}";
+                                processed++;
+                                continue;
+                            }
                         }
                     }
-                    else
-                    {
-                        itemResults[comicId] = $"No confident match for: {comic.FileName}";
-                        failed++;
-                    }
+
+                    itemResults[comicId] = $"No confident match for: {comic.FileName} (best: {bestMatch.MatchScore:P0})";
+                    failed++;
                 }
                 catch (Exception ex)
                 {
@@ -603,7 +522,9 @@ namespace ComicRow.Plugins.ComicVineScraper
             };
         }
 
-        #region IScheduledTaskPlugin Implementation
+        #endregion
+
+        #region IScheduledTaskPlugin
 
         public IReadOnlyList<ScheduledTaskDefinition> GetScheduledTasks()
         {
@@ -613,22 +534,68 @@ namespace ComicRow.Plugins.ComicVineScraper
                 {
                     TaskId = "auto-scrape-new-comics",
                     Name = "Auto-Scrape New Comics",
-                    Description = "Automatically scrape metadata from Comic Vine for newly imported comics during library scan",
+                    Description = "Automatically scrape metadata from Comic Vine for newly imported comics",
                     TriggerType = TaskTriggerType.LibraryScanPerBook,
-                    SortOrder = 50, // Run early in the per-book processing chain
-                    EnabledByDefault = false, // User must enable via settings
+                    SortOrder = 50,
+                    EnabledByDefault = false,
                     CanDisable = true,
-                    AllowManualRun = false, // Per-book tasks can't be run manually
+                    AllowManualRun = false,
                     Category = "Metadata",
                     ProcessOnlyNewBooks = true
+                },
+                new ScheduledTaskDefinition
+                {
+                    TaskId = "scrape-backlog",
+                    Name = "Scrape Backlog via Smart List",
+                    Description = "Scrape metadata for comics in the configured Backlog Smart List",
+                    TriggerType = TaskTriggerType.TimeBased,
+                    DefaultCron = "0 0 * * *", // Daily at midnight
+                    EnabledByDefault = false,
+                    CanDisable = true,
+                    AllowManualRun = true,
+                    Category = "Metadata"
                 }
             };
         }
 
-        public Task<PluginActionResult> ExecuteTaskAsync(string taskId, CancellationToken cancellationToken = default)
+        public async Task<PluginActionResult> ExecuteTaskAsync(string taskId, CancellationToken cancellationToken = default)
         {
-            // This plugin only has per-book tasks, no standalone scheduled tasks
-            return Task.FromResult(PluginActionResult.Ok($"Task {taskId} is a per-book task"));
+            if (_context == null) return PluginActionResult.Fail("Plugin not initialized");
+
+            if (taskId == "scrape-backlog")
+            {
+                var smartListNameOrId = await _context.GetValueAsync("backlog_smart_list");
+                if (string.IsNullOrWhiteSpace(smartListNameOrId))
+                {
+                    _context.Info("Backlog scraping skipped: 'backlog_smart_list' setting is empty.");
+                    return PluginActionResult.Ok("Skipped: No backlog smart list configured");
+                }
+
+                _context.Info($"Fetching comics from backlog smart list: {smartListNameOrId}");
+                
+                try 
+                {
+                    var comicIds = await _context.GetComicsInSmartListAsync(smartListNameOrId);
+                    
+                    if (comicIds.Count == 0)
+                    {
+                        _context.Info("No comics found in backlog smart list.");
+                        return PluginActionResult.Ok("No comics to process");
+                    }
+
+                    _context.Info($"Found {comicIds.Count} comics in backlog. Starting scrape...");
+                    
+                    // Re-use the existing scrape logic
+                    return await ExecuteAsync(comicIds.ToArray(), cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _context.Error("Failed to execute backlog scrape", ex);
+                    return PluginActionResult.Fail($"Error: {ex.Message}");
+                }
+            }
+
+            return PluginActionResult.Ok($"Task {taskId} is a per-book task or unknown");
         }
 
         public async Task<PluginActionResult> ExecutePerBookTaskAsync(string taskId, ScannedBookContext context, CancellationToken cancellationToken = default)
@@ -636,11 +603,7 @@ namespace ComicRow.Plugins.ComicVineScraper
             if (taskId != "auto-scrape-new-comics")
                 return PluginActionResult.Fail($"Unknown task: {taskId}");
 
-            if (_context == null)
-                return PluginActionResult.Fail("Plugin context not initialized");
-
-            // Only process new comics with valid IDs
-            if (!context.IsNew || context.ComicId == null)
+            if (_context == null || context.ComicId == null || !context.IsNew)
                 return PluginActionResult.Ok("Skipped - not a new comic");
 
             try
@@ -648,12 +611,9 @@ namespace ComicRow.Plugins.ComicVineScraper
                 _context.Info($"Auto-scraping Comic Vine for: {context.FileName}");
                 var result = await ExecuteAsync(new[] { context.ComicId.Value }, cancellationToken);
                 
-                if (result.Success && result.ItemsProcessed > 0 && result.ItemsFailed == 0)
-                    return PluginActionResult.Ok($"Successfully scraped metadata for {context.FileName}");
-                else if (result.ItemsFailed > 0)
-                    return PluginActionResult.Fail($"Failed to scrape {context.FileName}");
-                else
-                    return PluginActionResult.Ok($"No match found for {context.FileName}");
+                return result.Success && result.ItemsProcessed > 0
+                    ? PluginActionResult.Ok($"Successfully scraped {context.FileName}")
+                    : PluginActionResult.Ok($"No match found for {context.FileName}");
             }
             catch (Exception ex)
             {
@@ -664,149 +624,53 @@ namespace ComicRow.Plugins.ComicVineScraper
 
         #endregion
 
-        #region ILibraryScanPlugin Implementation (Legacy - kept for backward compatibility)
+        #region ILibraryScanPlugin (Legacy)
 
-        public async Task OnScanStartAsync(string directoryPath, CancellationToken cancellationToken = default)
-        {
-            if (_context == null) return;
-            
-            var autoScanStr = await _context.GetValueAsync("scan_on_library_import");
-            var autoScan = autoScanStr == "true";
-            
-            if (autoScan)
-            {
-                _context.Info($"Comic Vine Scraper: Library scan starting in {directoryPath}");
-            }
-        }
-
-        public Task OnComicScannedAsync(ScanComicContext context, CancellationToken cancellationToken = default)
-        {
-            // DEPRECATED: Per-book processing now handled via IScheduledTaskPlugin.ExecutePerBookTaskAsync
-            // This method is kept for backward compatibility with older ComicRow versions
-            // that don't support the Task Scheduler system.
-            return Task.CompletedTask;
-        }
-
-        public Task OnFileScannedAsync(ScanFileContext context, CancellationToken cancellationToken = default)
-        {
-            // Not used - we process comics, not raw files
-            return Task.CompletedTask;
-        }
-
-        public Task OnScanCompleteAsync(ScanResultSummary result, CancellationToken cancellationToken = default)
-        {
-            _context?.Info($"Comic Vine Scraper: Library scan complete - {result.ComicsAdded} new comics");
-            return Task.CompletedTask;
-        }
+        public Task OnScanStartAsync(string directoryPath, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task OnComicScannedAsync(ScanComicContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task OnFileScannedAsync(ScanFileContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task OnScanCompleteAsync(ScanResultSummary result, CancellationToken cancellationToken = default) => Task.CompletedTask;
 
         #endregion
 
-        #region Private Helpers
+        #region Request DTOs
 
-        private ComicVineIssue? FindBestMatch(ComicMetadata comic, List<ComicVineIssue>? results, double threshold)
+        private async Task<bool> IsIssueCountSyncEnabled()
         {
-            if (results == null || results.Count == 0)
-                return null;
-                
-            // Simple matching logic - production code should use more sophisticated matching
-            foreach (var result in results)
-            {
-                // Check series name similarity
-                if (result.Volume?.Name != null && 
-                    !string.IsNullOrEmpty(comic.Series) &&
-                    comic.Series.IndexOf(result.Volume.Name, StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    // Check issue number
-                    if (comic.Number == result.IssueNumber)
-                    {
-                        return result;
-                    }
-                }
-            }
-            
-            // Return first result if no exact match (let user confirm)
-            return results.Count > 0 ? results[0] : null;
+            if (_context == null) return false;
+            var value = await _context.GetValueAsync("enable_issue_count_sync");
+            return value?.ToLower() == "true";
         }
 
-        private string? StripHtml(string? html)
+        private class SearchRequest
         {
-            if (string.IsNullOrEmpty(html))
-                return html;
-                
-            // Simple HTML stripping - remove tags
-            return System.Text.RegularExpressions.Regex.Replace(html, "<.*?>", string.Empty);
+            [JsonProperty("query")] public string? Query { get; set; }
+            [JsonProperty("issueNumber")] public string? IssueNumber { get; set; }
+            [JsonProperty("year")] public int? Year { get; set; }
+            [JsonProperty("limit")] public int? Limit { get; set; }
+            [JsonProperty("useVolumeSearch")] public bool? UseVolumeSearch { get; set; }
+        }
+
+        private class VolumeSearchRequest
+        {
+            [JsonProperty("query")] public string? Query { get; set; }
+            [JsonProperty("year")] public int? Year { get; set; }
+        }
+
+        private class ApplyRequest
+        {
+            [JsonProperty("comicId")] public string? ComicId { get; set; }
+            [JsonProperty("comicVineId")] public int ComicVineId { get; set; }
+            [JsonProperty("mergeMode")] public bool? MergeMode { get; set; }
+        }
+
+        private class ScrapeRequest
+        {
+            [JsonProperty("comicIds")] public Guid[]? ComicIds { get; set; }
+            [JsonProperty("autoApplyThreshold")] public double? AutoApplyThreshold { get; set; }
+            [JsonProperty("mergeMode")] public bool? MergeMode { get; set; }
         }
 
         #endregion
     }
-
-    #region Comic Vine API Models
-
-    public class ComicVineSearchResult
-    {
-        [JsonProperty("results")]
-        public List<ComicVineIssue>? Results { get; set; }
-        
-        [JsonProperty("error")]
-        public string? Error { get; set; }
-        
-        [JsonProperty("status_code")]
-        public int StatusCode { get; set; }
-    }
-
-    public class ComicVineIssueResult
-    {
-        [JsonProperty("results")]
-        public ComicVineIssue? Results { get; set; }
-        
-        [JsonProperty("error")]
-        public string? Error { get; set; }
-        
-        [JsonProperty("status_code")]
-        public int StatusCode { get; set; }
-    }
-
-    public class ComicVineIssue
-    {
-        [JsonProperty("id")]
-        public int Id { get; set; }
-        
-        [JsonProperty("name")]
-        public string? Name { get; set; }
-        
-        [JsonProperty("issue_number")]
-        public string? IssueNumber { get; set; }
-        
-        [JsonProperty("description")]
-        public string? Description { get; set; }
-        
-        [JsonProperty("cover_date")]
-        public DateTime? CoverDate { get; set; }
-        
-        [JsonProperty("volume")]
-        public ComicVineVolume? Volume { get; set; }
-    }
-
-    public class ComicVineVolume
-    {
-        [JsonProperty("id")]
-        public int Id { get; set; }
-        
-        [JsonProperty("name")]
-        public string? Name { get; set; }
-        
-        [JsonProperty("publisher")]
-        public ComicVinePublisher? Publisher { get; set; }
-    }
-
-    public class ComicVinePublisher
-    {
-        [JsonProperty("id")]
-        public int Id { get; set; }
-        
-        [JsonProperty("name")]
-        public string? Name { get; set; }
-    }
-
-    #endregion
 }

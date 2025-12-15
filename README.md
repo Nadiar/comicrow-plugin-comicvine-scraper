@@ -15,6 +15,9 @@ A ComicRow plugin that scrapes comic metadata from [Comic Vine](https://comicvin
 ### From Release
 1. Download the latest `.crowplugin` file from [Releases](https://github.com/Nadiar/comicrow-plugin-comicvine/releases)
 2. In ComicRow, go to **Settings → Plugins → Install**
+
+## Scheduling
+Automatic or periodic tasks should be configured in ComicRow's central Scheduled Tasks UI (Settings → Scheduled Tasks). The plugin no longer exposes an "auto-scan on import" toggle that performs background scheduling. To run scheduled backlog scrapes, create a Scheduled Task that calls the plugin's `/scrape` endpoint (use the `PluginApi` invocation in the task definition). A suggested disabled scheduled task `comicvine-backlog-scrape` is provided in the manifest; enable/configure it from Scheduled Tasks if desired.
 3. Select the downloaded `.crowplugin` file
 
 ### From GitHub URL
@@ -45,15 +48,30 @@ A ComicRow plugin that scrapes comic metadata from [Comic Vine](https://comicvin
 | Parse Filename | true | Parse series/issue from filename if metadata empty |
 | Auto-scan on Import | false | Scrape during library imports (slow!) |
 
+## Scheduled Tasks
+
+This plugin registers a per-book scheduled task that runs during library scans:
+
+| Task ID | Name | Trigger | Default |
+|---------|------|---------|--------|
+| `auto-scrape-new-comics` | Auto-scrape from Comic Vine | Per-Book (Library Scan) | Disabled |
+
+**Enable via:** Settings → Scheduled Tasks → Enable "Auto-scrape from Comic Vine"
+
+When enabled, this task automatically scrapes metadata from Comic Vine for each comic during library scans. By default, it only processes **new books** (not previously scanned). The task respects the confidence threshold and merge mode settings.
+
 ## Permissions
 
+> **Warning:** If your plugin requests `system:admin`, you must justify why an API endpoint cannot be used instead. Always prefer API-based orchestration over direct system permissions. Discuss with the core team before publishing.
+
 This plugin requires:
-- **comic:read** - Read comic metadata for searching
-- **http: comicvine.gamespot.com** - Access Comic Vine API
-- **comic:metadata** - Store scraped metadata
+
+- **comicvine.gamespot.com** - Access Comic Vine API
+- **comic:metadata:write** - Store scraped metadata
 
 Optional:
-- **comic:write** - Update embedded ComicInfo.xml
+
+- **file:comic:write** - Update embedded ComicInfo.xml
 
 ## Development
 

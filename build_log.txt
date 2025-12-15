@@ -1,0 +1,14 @@
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  PluginSystem -> C:\Users\nadiar\Code\ComicRow\PluginSystem\bin\Debug\net9.0\ComicRow.PluginSystem.dll
+C:\Users\nadiar\Code\comicrow-plugin-comicvine-scraper\ComicVineScraperPlugin.cs(550,21): error CS0117: 'ScheduledTaskDefinition' does not contain a definition for 'IntervalMinutes' [C:\Users\nadiar\Code\comicrow-plugin-comicvine-scraper\ComicVineScraper.csproj]
+C:\Users\nadiar\Code\comicrow-plugin-comicvine-scraper\ComicVineScraperPlugin.cs(563,47): warning CS8602: Dereference of a possibly null reference. [C:\Users\nadiar\Code\comicrow-plugin-comicvine-scraper\ComicVineScraper.csproj]
+
+Build FAILED.
+
+C:\Users\nadiar\Code\comicrow-plugin-comicvine-scraper\ComicVineScraperPlugin.cs(563,47): warning CS8602: Dereference of a possibly null reference. [C:\Users\nadiar\Code\comicrow-plugin-comicvine-scraper\ComicVineScraper.csproj]
+C:\Users\nadiar\Code\comicrow-plugin-comicvine-scraper\ComicVineScraperPlugin.cs(550,21): error CS0117: 'ScheduledTaskDefinition' does not contain a definition for 'IntervalMinutes' [C:\Users\nadiar\Code\comicrow-plugin-comicvine-scraper\ComicVineScraper.csproj]
+    1 Warning(s)
+    1 Error(s)
+
+Time Elapsed 00:00:01.46
