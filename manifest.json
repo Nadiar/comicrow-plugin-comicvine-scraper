@@ -2,16 +2,21 @@
   "$schema": "https://comicrow.com/schemas/crowplugin-manifest-v1.json",
   "id": "comicvine-scraper",
   "name": "ComicVine Scraper",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "author": "ComicRow",
   "description": "Scrape comic metadata from ComicVine. Supports batch processing with smart matching, confidence thresholds, and manual match review.",
   "language": "dotnet",
-  "entrypoint": "ComicVineScraperPlugin.dll",
+  "entrypoint": "bin/publish/ComicVineScraperPlugin.dll",
   "sdkVersion": "1.0.0",
   "hooks": [
     "OnLoad",
     "OnUnload"
   ],
+  "contextMenu": {
+    "label": "Scrape from ComicVine",
+    "icon": "search",
+    "targets": ["comic"]
+  },
   "RequiredPermissions": {
     "Http": ["comicvine.gamespot.com"],
     "Database": ["comic:metadata:write"],
@@ -99,12 +104,17 @@
     "enabled": true
   },
   "settings": {
-    "scan_on_library_import": {
-      "type": "boolean",
-      "default": false,
-      "label": "Auto-scan on Import",
-      "description": "Automatically scrape metadata during library imports. WARNING: Can slow down large imports."
+    "api_key": {
+      "type": "password",
+      "default": "",
+      "label": "API Key",
+      "description": "Your ComicVine API key. Get one free at https://comicvine.gamespot.com/api/",
+      "required": true,
+      "secret": true
     },
+    /* Removed automatic import-trigger setting. Scheduling and periodic jobs must be configured
+       centrally via ComicRow's Scheduled Tasks UI. To enable an import-scan job, create a
+       Scheduled Task that invokes the plugin's `/scrape` endpoint. */
     "auto_apply_threshold": {
       "type": "number",
       "default": 0.85,
@@ -131,6 +141,11 @@
       "label": "Only Missing IDs",
       "description": "Only process comics without a Comic Vine ID."
     },
+    "backlog_smart_list": {
+      "type": "string",
+      "default": "",
+      "description": "Name or ID of the smart list to use for backlog scraping. If empty, backlog scraping is disabled."
+    },
     "parse_filename": {
       "type": "boolean",
       "default": true,
@@ -145,5 +160,16 @@
       "label": "Max Results",
       "description": "Maximum search results per comic."
     }
+  }
+  ,
+  "scheduledTasks": {
+    "enabled": false,
+    "tasks": [
+      {
+        "id": "comicvine-backlog-scrape",
+        "name": "ComicVine Backlog Scrape (suggested)",
+        "description": "Scrape backlog smart list on schedule. Disabled by default. Configure in Scheduled Tasks UI to enable."
+      }
+    ]
   }
 }
