@@ -152,6 +152,12 @@
       "label": "Parse Filename",
       "description": "Parse series name and issue number from filename if metadata is empty."
     },
+    "enable_issue_count_sync": {
+      "type": "boolean",
+      "default": false,
+      "label": "Sync Issue Count",
+      "description": "Sync issue count from ComicVine to your library."
+    },
     "max_search_results": {
       "type": "number",
       "default": 5,

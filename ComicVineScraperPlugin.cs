@@ -552,8 +552,31 @@ namespace ComicRow.Plugins.ComicVineScraper
                     DefaultCron = "0 0 * * *", // Daily at midnight
                     EnabledByDefault = false,
                     CanDisable = true,
-                    AllowManualRun = true,
                     Category = "Metadata"
+                },
+                new ScheduledTaskDefinition
+                {
+                    TaskId = "sync-issue-counts",
+                    Name = "Sync ComicVine Issue Counts",
+                    Description = "Updates the total issue count for all comics tagged with ComicVine IDs",
+                    TriggerType = TaskTriggerType.TimeBased,
+                    DefaultCron = "0 3 * * *", // Daily at 3 AM
+                    Category = "Metadata",
+                    EnabledByDefault = false,
+                    AllowManualRun = true
+                },
+                new ScheduledTaskDefinition
+                {
+                    TaskId = "sync-issue-counts-scan",
+                    Name = "Sync Issue Counts (On Scan)",
+                    Description = "Updates issue count from ComicVine when a comic is scanned (requires existing CV tag)",
+                    TriggerType = TaskTriggerType.LibraryScanPerBook,
+                    SortOrder = 60,
+                    EnabledByDefault = false,
+                    CanDisable = true,
+                    AllowManualRun = false,
+                    Category = "Metadata",
+                    ProcessOnlyNewBooks = false // Run on re-scans too if desired, or maybe true? Defaulting to false to ensure updates happen.
                 }
             };
         }
@@ -561,6 +584,56 @@ namespace ComicRow.Plugins.ComicVineScraper
         public async Task<PluginActionResult> ExecuteTaskAsync(string taskId, CancellationToken cancellationToken = default)
         {
             if (_context == null) return PluginActionResult.Fail("Plugin not initialized");
+
+            if (taskId == "sync-issue-counts")
+            {
+                if (!await IsIssueCountSyncEnabled())
+                {
+                    return PluginActionResult.Ok("Skipped: Issue Count Sync is disabled in settings.");
+                }
+
+                _context.Info("Starting ComicVine Issue Count Sync...");
+                int updated = 0;
+                int failed = 0;
+
+                var allIds = await _context.GetAllComicIdsAsync();
+                
+                foreach(var id in allIds)
+                {
+                    if (cancellationToken.IsCancellationRequested) break;
+
+                    var comic = await _context.GetComicMetadataAsync(id);
+                    if (comic == null) continue;
+
+                    // Check for CV ID in tags
+                    var cvIdTag = await _context.GetComicTagAsync(id, "comicvine:issue");
+                    if (string.IsNullOrEmpty(cvIdTag)) continue;
+
+                    try
+                    {
+                        var metadata = await _apiClient!.GetIssueMetadataAsync(cvIdTag, cancellationToken);
+                        if (metadata != null && metadata.Count.HasValue && metadata.Count != comic.Count)
+                        {
+                            var update = new ComicMetadataUpdate 
+                            { 
+                                ComicId = id,
+                                Count = metadata.Count 
+                            };
+                            if (await _context.UpdateComicMetadataAsync(id, update))
+                            {
+                                updated++;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        failed++;
+                        _context.Error($"Failed to sync count for {comic.FileName}", ex);
+                    }
+                }
+
+                return PluginActionResult.Ok($"Synced issue counts. Updated {updated} comics. Failed {failed}.");
+            }
 
             if (taskId == "scrape-backlog")
             {
@@ -600,10 +673,51 @@ namespace ComicRow.Plugins.ComicVineScraper
 
         public async Task<PluginActionResult> ExecutePerBookTaskAsync(string taskId, ScannedBookContext context, CancellationToken cancellationToken = default)
         {
+            if (_context == null || context.ComicId == null)
+                return PluginActionResult.Ok("Skipped - context missing or no ID");
+
+             if (taskId == "sync-issue-counts-scan")
+             {
+                if (!await IsIssueCountSyncEnabled())
+                    return PluginActionResult.Ok("Skipped (Disabled)");
+
+                try
+                {
+                    var cvIdTag = await _context.GetComicTagAsync(context.ComicId.Value, "comicvine:issue");
+                    if (string.IsNullOrEmpty(cvIdTag)) 
+                        return PluginActionResult.Ok("Skipped (No CV Tag)");
+
+                    var metadata = await _apiClient!.GetIssueMetadataAsync(cvIdTag, cancellationToken);
+                    
+                    // Need to fetch current comic metadata to compare count? 
+                    // Or just update if we have it? Let's check first to save writes.
+                    // context doesn't have current metadata Count.
+                    var comic = await _context.GetComicMetadataAsync(context.ComicId.Value);
+                    
+                    if (metadata != null && metadata.Count.HasValue && comic != null && metadata.Count != comic.Count)
+                    {
+                        var update = new ComicMetadataUpdate 
+                        { 
+                            ComicId = context.ComicId.Value,
+                            Count = metadata.Count 
+                        };
+                        await _context.UpdateComicMetadataAsync(context.ComicId.Value, update);
+                        return PluginActionResult.Ok($"Synced issue count: {metadata.Count}");
+                    }
+                    
+                    return PluginActionResult.Ok("Up to date");
+                }
+                catch (Exception ex)
+                {
+                     _context.Error($"Error syncing count for {context.FileName}", ex);
+                     return PluginActionResult.Fail(ex.Message);
+                }
+             }
+
             if (taskId != "auto-scrape-new-comics")
                 return PluginActionResult.Fail($"Unknown task: {taskId}");
 
-            if (_context == null || context.ComicId == null || !context.IsNew)
+            if (!context.IsNew)
                 return PluginActionResult.Ok("Skipped - not a new comic");
 
             try
