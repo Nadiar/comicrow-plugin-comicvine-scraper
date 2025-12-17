@@ -1,0 +1,9 @@
+<Project>
+  <PropertyGroup>
+    <!-- Ensure NuGet package-provided props/targets are imported during project builds in this repo.
+         Some restore/build paths can set ExcludeRestorePackageImports=true which prevents importing package
+         props/targets and can cause compile-time references (e.g., xUnit assemblies) to be missing.
+         Setting this here ensures test projects get package imports as expected. -->
+    <ExcludeRestorePackageImports>false</ExcludeRestorePackageImports>
+  </PropertyGroup>
+</Project>
