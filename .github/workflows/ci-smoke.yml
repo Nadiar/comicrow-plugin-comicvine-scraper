@@ -1,0 +1,41 @@
+name: CI — Smoke Build
+
+on:
+  pull_request:
+    branches: [ master ]
+  push:
+    branches: [ master ]
+
+jobs:
+  smoke-build:
+    name: Smoke build for test projects
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Restore solution
+        run: dotnet restore
+
+      - name: Build test projects (fast smoke)
+        run: |
+          set -e
+          echo "Finding test projects and building them..."
+          # Find csproj files with 'Test' or 'Tests' in the filename and build them (no restore)
+          find . -type f -name '*Test*.csproj' -o -name '*Tests*.csproj' | while read -r proj; do
+            echo "Building $proj"
+            dotnet build "$proj" --configuration Release --no-restore
+          done
