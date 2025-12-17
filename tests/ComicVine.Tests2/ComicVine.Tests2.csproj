@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <!-- Ensure package-provided props/targets are imported during build -->
+    <ExcludeRestorePackageImports>false</ExcludeRestorePackageImports>
   </PropertyGroup>
 
   <ItemGroup>
