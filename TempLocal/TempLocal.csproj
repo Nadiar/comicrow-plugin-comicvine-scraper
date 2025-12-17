@@ -13,9 +13,7 @@
     <PackageReference Include="coverlet.collector" Version="6.0.2" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
     <PackageReference Include="xunit" Version="2.4.1" />
-    <!-- Ensure compile-time references are present when implicit global using for Xunit is generated -->
-    <PackageReference Include="xunit.assert" Version="2.4.1" />
-    <PackageReference Include="xunit.core" Version="2.4.1" />
+    <!-- Temp local helper - rely on repo-level package imports instead of explicit core/assert refs -->
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
